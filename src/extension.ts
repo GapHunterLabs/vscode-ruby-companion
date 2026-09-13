@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { scanShellInjection, scanNetHttpInLoop, scanGemfileGroups } from './scanners';
+import { recordHit } from './reviewPrompt';
 
 let diagnostics: vscode.DiagnosticCollection;
 
@@ -8,7 +9,11 @@ function basename(uri: vscode.Uri): string {
   return path.slice(path.lastIndexOf('/') + 1);
 }
 
-function toDiagnostics(hits: { line: number; rule: string; message: string }[]): vscode.Diagnostic[] {
+function toDiagnostics(
+  context: vscode.ExtensionContext,
+  document: vscode.TextDocument,
+  hits: { line: number; rule: string; message: string }[],
+): vscode.Diagnostic[] {
   return hits.map((hit) => {
     // Line-only precision (no column tracking in these ports, matching
     // the originals' own hit shape for nethttp/gemfile) -- underline
@@ -17,11 +22,12 @@ function toDiagnostics(hits: { line: number; rule: string; message: string }[]):
     const diagnostic = new vscode.Diagnostic(range, hit.message, vscode.DiagnosticSeverity.Warning);
     diagnostic.source = 'Ruby Companion';
     diagnostic.code = hit.rule;
+    recordHit(context, `${document.uri.toString()}:${hit.rule}:${hit.line - 1}`);
     return diagnostic;
   });
 }
 
-function refresh(document: vscode.TextDocument): void {
+function refresh(context: vscode.ExtensionContext, document: vscode.TextDocument): void {
   const name = basename(document.uri);
   const isRubySource = document.languageId === 'ruby' || name.endsWith('.rb');
   const isGemfile = name === 'Gemfile' || name.endsWith('.gemfile');
@@ -33,18 +39,18 @@ function refresh(document: vscode.TextDocument): void {
     ? scanGemfileGroups(text)
     : [...scanShellInjection(text), ...scanNetHttpInLoop(text)];
 
-  diagnostics.set(document.uri, toDiagnostics(hits));
+  diagnostics.set(document.uri, toDiagnostics(context, document, hits));
 }
 
 export function activate(context: vscode.ExtensionContext): void {
   diagnostics = vscode.languages.createDiagnosticCollection('rubyCompanion');
   context.subscriptions.push(diagnostics);
 
-  vscode.workspace.textDocuments.forEach(refresh);
+  vscode.workspace.textDocuments.forEach((doc) => refresh(context, doc));
 
   context.subscriptions.push(
-    vscode.workspace.onDidOpenTextDocument(refresh),
-    vscode.workspace.onDidChangeTextDocument((event) => refresh(event.document)),
+    vscode.workspace.onDidOpenTextDocument((doc) => refresh(context, doc)),
+    vscode.workspace.onDidChangeTextDocument((event) => refresh(context, event.document)),
     vscode.workspace.onDidCloseTextDocument((document) => diagnostics.delete(document.uri)),
   );
 }
